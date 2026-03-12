@@ -59,14 +59,16 @@ print(f"Quantization test: PASSED | Error: {err:.6f} | "
       f"({pack_bytes/orig_bytes*100:.0f}%)")
 del W_test, q, s, packed, unpacked, W_recon
 
+# ==========================================================
+# OPTIMIZED TRITON KERNEL (Utilizing Tensor Cores via tl.dot)
+# ==========================================================
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 128}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 128}, num_warps=4, num_stages=3),
     ],
     key=['M', 'N', 'K'],
 )
@@ -81,38 +83,53 @@ def matmul_4bit_kernel(
     GROUP_SIZE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
     
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+
     mask_m = offs_m < M
     mask_n = offs_n < N
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for k_pack in range(0, (K + 7) // 8):
-        base_k = k_pack * 8
 
-        w_ptrs = w_packed_ptr + k_pack * stride_wk + offs_n * stride_wn
-        packed = tl.load(w_ptrs, mask=mask_n, other=0)
+    # For W_packed, K is divided by 8. We process BLOCK_K // 8 int32 elements per loop.
+    offs_k_packed = tl.arange(0, BLOCK_K // 8)
 
+    for k_idx in range(0, tl.cdiv(K, BLOCK_K)):
+        base_k = k_idx * BLOCK_K
+        base_k_packed = base_k // 8
+
+        # Load packed weights tile
+        w_k_inds = base_k_packed + offs_k_packed
+        w_ptrs = w_packed_ptr + (w_k_inds[:, None] * stride_wk + offs_n[None, :] * stride_wn)
+        w_mask = (w_k_inds[:, None] < (K // 8)) & mask_n[None, :]
+        w_packed = tl.load(w_ptrs, mask=w_mask, other=0)
+
+        # Load scales tile
         group_idx = base_k // GROUP_SIZE
-        s_ptrs = scales_ptr + group_idx * stride_sk + offs_n * stride_sn
-        scale = tl.load(s_ptrs, mask=mask_n, other=1.0).to(tl.float32)
+        s_ptrs = scales_ptr + (group_idx * stride_sk + offs_n * stride_sn)
+        scale = tl.load(s_ptrs, mask=mask_n, other=1.0)
 
+        # Iterate over the 8 packed bits and use tl.dot for hardware acceleration
         for bit in tl.static_range(8):
-            k_idx = base_k + bit
+            # Dequantize a sub-slice of weights: shape (BLOCK_K // 8, BLOCK_N)
+            w_slice = (w_packed >> (bit * 4)) & 0xF
+            w_deq = ((w_slice.to(tl.float32) - 8.0) / 7.5) * scale[None, :]
 
-            val = ((packed >> (bit * 4)) & 0xF).to(tl.float32)
-            deq = ((val - 8.0) / 7.5) * scale
+            # Load the corresponding sub-slice of X: shape (BLOCK_M, BLOCK_K // 8)
+            k_inds = base_k + offs_k_packed * 8 + bit
+            x_ptrs = x_ptr + (offs_m[:, None] * stride_xm + k_inds[None, :] * stride_xk)
+            x_mask = mask_m[:, None] & (k_inds[None, :] < K)
+            x_slice = tl.load(x_ptrs, mask=x_mask, other=0.0)
 
-            x_ptrs = x_ptr + offs_m * stride_xm + k_idx * stride_xk
-            x_col = tl.load(x_ptrs, mask=(mask_m & (k_idx < K)), other=0.0).to(tl.float32)
+            # Tensor Core matrix multiplication!
+            acc += tl.dot(x_slice, w_deq.to(tl.float16), out_dtype=tl.float32)
 
-            acc += x_col[:, None] * deq[None, :]
-
-    out_ptrs = out_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    out_ptrs = out_ptr + (offs_m[:, None] * stride_om + offs_n[None, :] * stride_on)
     tl.store(out_ptrs, acc.to(tl.float16), mask=(mask_m[:, None] & mask_n[None, :]))
 
 def matmul_4bit(x, w_packed, scales, group_size=128):
