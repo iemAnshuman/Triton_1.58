@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 print(f"GPU: {torch.cuda.get_device_name()}")
 print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-print(f"Triton: {triton.version} | PyTorch: {torch.version}")
+print(f"Triton: {triton.__version__} | PyTorch: {torch.__version__}")
 
 DEVICE = "cuda"
 DTYPE = torch.float16
