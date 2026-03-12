@@ -425,8 +425,8 @@ full_benchmark = {
 }
 if bnb_vram:
     full_benchmark['bnb_nf4'] = {'vram': bnb_vram, 'tok_sec': bnb_tok, 'ppl': bnb_ppl}
-
-matplotlib.rcParams['figure.dpi'] = 150
+    
+plt.rcParams['figure.dpi'] = 150
 COLORS = {'fp16': '#4285F4', 'ours_4bit': '#EA4335', 'bnb_nf4': '#FBBC05'}
 configs = list(full_benchmark.keys())
 labels = {'fp16': 'FP16\nBaseline', 'ours_4bit': 'Ours\n(4-bit Triton)', 'bnb_nf4': 'bitsandbytes\nNF4'}
