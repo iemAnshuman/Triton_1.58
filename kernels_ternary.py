@@ -35,23 +35,23 @@ __all__ = ["matmul_ternary"]
 @triton.autotune(
     configs=[
         triton.Config(
-            {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 128},
+            {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 256},
             num_warps=4, num_stages=3,
         ),
         triton.Config(
-            {"BLOCK_M": 16, "BLOCK_N": 64, "BLOCK_K": 128},
+            {"BLOCK_M": 16, "BLOCK_N": 64, "BLOCK_K": 256},
             num_warps=4, num_stages=3,
         ),
         triton.Config(
-            {"BLOCK_M": 32, "BLOCK_N": 64, "BLOCK_K": 128},
+            {"BLOCK_M": 32, "BLOCK_N": 64, "BLOCK_K": 256},
             num_warps=4, num_stages=3,
         ),
         triton.Config(
-            {"BLOCK_M": 32, "BLOCK_N": 128, "BLOCK_K": 128},
+            {"BLOCK_M": 32, "BLOCK_N": 128, "BLOCK_K": 256},
             num_warps=4, num_stages=3,
         ),
         triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 128},
+            {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 256},
             num_warps=4, num_stages=3,
         ),
     ],
