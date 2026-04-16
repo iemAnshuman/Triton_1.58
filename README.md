@@ -1,53 +1,56 @@
-# Efficient LLM Inference: 4-Bit Quantized Engine
+# Ternary (1.58-bit) Phase
 
-Custom 4-bit post-training quantization pipeline with fused Triton GPU kernels for accelerated LLM inference.
+Extends the 4-bit pipeline from the previous commit to ternary weight
+quantization, following the BitNet b1.58 paradigm (Ma et al., 2024) applied
+as a post-training transform.
 
-## Module Structure
+## What's new
 
 ```
-quantize.py   — Quantization functions: quantize_4bit(), dequantize_4bit(), pack_4bit(), unpack_4bit()
-kernels.py    — Triton kernel: matmul_4bit_kernel() with @autotune, matmul_4bit() Python wrapper
-model.py      — Linear4Bit nn.Module, quantize_linear_layer(), quantize_model()
-benchmark.py  — Kernel-level and model-level benchmarking suite
-generate.py   — Text generation pipeline with FP16 vs 4-bit comparison
-visualize.py  — Matplotlib chart generation for reports
-main.py       — Master script orchestrating the full pipeline
+quantize_ternary.py  — absmean ternary quantization + 16-per-INT32 packing
+kernels_ternary.py   — Triton ternary matmul kernel with 2-bit unpacking
+model_ternary.py     — LinearTernary nn.Module + model traversal
+main_ternary.py      — 4-way benchmark pipeline (FP16 / 4-bit / ternary / NF4)
 ```
 
-## Requirements
+The existing `benchmark.py`, `generate.py`, and `visualize.py` modules from
+the 4-bit phase are reused unchanged.
 
-- Python 3.10+
-- PyTorch 2.1+ with CUDA 11.8+
-- OpenAI Triton 2.1+
-- HuggingFace Transformers 4.36+
-- NumPy, Matplotlib
-- (Optional) bitsandbytes 0.41+ for NF4 baseline comparison
+## Key design decisions
 
-## Usage
+- **Quantization scheme**: absmean per-group (128), following BitNet's
+  quantization function but applied post-training rather than during training.
+- **Packing**: 16 ternary values per INT32. Encoding `0 -> 00`, `+1 -> 01`,
+  `-1 -> 10` (code `11` unused).
+- **Kernel**: unpacks to FP16 `{-1.0, 0.0, +1.0}`, applies per-group scale,
+  dispatches to Tensor Cores via `tl.dot()`. True multiplication-free
+  execution requires hardware with native ternary matmul (not available on
+  current NVIDIA consumer GPUs).
+- **Skipped layers**: embeddings, LM head, and rotary — kept in FP16.
+
+## Compression math
+
+| Storage                          | Bits/weight |
+|----------------------------------|-------------|
+| FP16                             | 16.00       |
+| 4-bit (previous phase)           | 4.00 + scales ~= 4.12 |
+| Ternary (this phase)             | 2.00 + scales ~= 2.12 |
+| Information-theoretic minimum    | 1.58        |
+
+Practical VRAM reduction vs FP16: roughly 8x on quantized layers.
+
+## Running
 
 ```bash
-# Run the full pipeline (tests, benchmarks, generation, charts)
-python main.py
-
-# Run individual module tests
-python quantize.py    # quantization self-test
-python kernels.py     # kernel correctness test
+python main_ternary.py
 ```
 
-## Results (TinyLlama-1.1B on Tesla T4)
+Outputs `ternary_benchmarks.png` and `ternary_report.json`.
 
-| Configuration      | VRAM (GB) | Tokens/sec | Perplexity |
-|---------------------|-----------|------------|------------|
-| FP16 Baseline       | 2.21      | 32.7       | 17.9       |
-| Ours (4-bit Triton) | 1.08      | 22.5       | 19.5       |
-| bitsandbytes NF4    | 2.21      | 20.4       | 18.7       |
+## Expected quality caveat
 
-**51% VRAM reduction** · **10% faster than bitsandbytes** · **+1.6 perplexity**
-
-## License
-
-Copyright 2026 Anshuman Agrawal.
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text,
-and [NOTICE](NOTICE) for attribution information. You may obtain a copy of the License at
-http://www.apache.org/licenses/LICENSE-2.0.
+Post-training ternary quantization is fundamentally harder than 4-bit — the
+information-theoretic capacity is 4x lower. Unlike natively trained BitNet
+models (which match FP16), PTQ ternary typically shows a noticeable
+perplexity gap. This implementation is a foundation for future
+quantization-aware fine-tuning work that can close the gap.
