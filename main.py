@@ -34,7 +34,7 @@ from quantize import test_quantization
 from kernels import test_kernel
 from model import quantize_model
 from benchmark import run_kernel_benchmarks, run_model_benchmarks
-from generate import compare_generations
+from generate import generate_text
 from visualize import plot_model_benchmarks, plot_kernel_benchmarks
 
 # ── Configuration ──────────────────────────────────────────────
@@ -73,19 +73,32 @@ def main():
     model_fp16.eval()
     print(f"FP16 loaded. VRAM: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB\n")
 
-    # ── Step 4: Quantize model ─────────────────────────────────
+    # ── Step 4: Capture FP16 generations before in-place quantization ─
+    fp16_outputs = []
+    print("--- FP16 Outputs ---")
+    for prompt in TEST_PROMPTS:
+        text = generate_text(model_fp16, tokenizer, prompt, max_new_tokens=60)
+        fp16_outputs.append(text)
+        print(f"[FP16] {text[:180]}\n")
+
+    # ── Step 5: Quantize model ─────────────────────────────────
     print("Quantizing to 4-bit...")
     torch.cuda.reset_peak_memory_stats()
     model_4bit = quantize_model(model_fp16, GROUP_SIZE)
     model_4bit.eval()
     print(f"4-bit ready. VRAM: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB\n")
 
-    # ── Step 5: Side-by-side generation comparison ─────────────
-    generation_comparison = compare_generations(
-        model_fp16, model_4bit, tokenizer, TEST_PROMPTS
-    )
+    # ── Step 6: Side-by-side generation comparison ─────────────
+    q4_outputs = []
+    print("--- 4-Bit Outputs ---")
+    for prompt in TEST_PROMPTS:
+        text = generate_text(model_4bit, tokenizer, prompt, max_new_tokens=60)
+        q4_outputs.append(text)
+        print(f"[4BIT] {text[:180]}\n")
 
-    # ── Step 6: Model-level benchmarks ─────────────────────────
+    generation_comparison = list(zip(TEST_PROMPTS, fp16_outputs, q4_outputs))
+
+    # ── Step 7: Model-level benchmarks ─────────────────────────
     del model_fp16
     torch.cuda.empty_cache()
 

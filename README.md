@@ -47,6 +47,16 @@ python main_ternary.py
 
 Outputs `ternary_benchmarks.png` and `ternary_report.json`.
 
+For quality-oriented PTQ experiments, run the CUDA search script:
+
+```bash
+python ternary_quality_search.py --target-ppl 100 --max-samples 100
+```
+
+It evaluates pure ternary first, then hybrid variants that keep selected
+sensitive projections or edge transformer blocks in FP16 while the remaining
+linear layers use the Triton ternary kernel.
+
 ## Expected quality caveat
 
 Post-training ternary quantization is fundamentally harder than 4-bit — the

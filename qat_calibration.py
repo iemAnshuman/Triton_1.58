@@ -2,11 +2,11 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-qat_calibration.py — Lightweight QAT calibration for ternary-quantized models.
+qat_calibration.py — Lightweight calibration for ternary-quantized models.
 
-Applies LoRA adapters to the ternary-quantized model and fine-tunes on a small
-calibration set (WikiText-2) using knowledge distillation from the FP16 teacher.
-The ternary weights remain frozen; only the LoRA adapters are trained.
+Applies per-linear output scale/shift adapters to the ternary-quantized model
+and fine-tunes them on a small calibration set (WikiText-2) using knowledge
+distillation from the FP16 teacher. The ternary weights remain frozen.
 
 This is NOT full quantization-aware training (which requires training from scratch).
 It is a post-quantization calibration step that adapts the model's residual layers
@@ -25,6 +25,7 @@ from benchmark import compute_perplexity
 # ── Configuration ──────────────────────────────────────────────
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 GROUP_SIZE = 128
+QUANT_METHOD = "mse"
 DEVICE = "cuda"
 
 # Calibration hyperparameters
@@ -56,7 +57,11 @@ print("\n=== Step 2: Ternary quantization (pre-calibration) ===")
 model_ternary = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME, torch_dtype=torch.float16, device_map="cuda"
 )
-model_ternary = quantize_model_ternary(model_ternary, GROUP_SIZE)
+model_ternary = quantize_model_ternary(
+    model_ternary,
+    GROUP_SIZE,
+    quant_method=QUANT_METHOD,
+)
 model_ternary.eval()
 pre_cal_ppl = compute_perplexity(model_ternary, tokenizer)
 print(f"  Ternary perplexity (pre-calibration): {pre_cal_ppl:.2f}")
@@ -220,6 +225,7 @@ results = {
     "calibration_config": {
         "n_steps": N_CALIBRATION_STEPS,
         "lr": LEARNING_RATE,
+        "quant_method": QUANT_METHOD,
         "batch_size": BATCH_SIZE,
         "max_seq_len": MAX_SEQ_LEN,
         "n_calibration_sequences": len(all_ids),
