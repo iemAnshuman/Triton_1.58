@@ -17,6 +17,7 @@ from generate import generate_text
 
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 GROUP_SIZE = 128
+QUANT_METHOD = "mse"
 DEVICE = "cuda"
 N_STEPS = 500
 LR = 1e-5  # 20x lower than before
@@ -40,7 +41,7 @@ torch.cuda.empty_cache()
 # Ternary model
 print("\n=== Ternary quantization ===")
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.float16, device_map="cuda")
-model = quantize_model_ternary(model, GROUP_SIZE)
+model = quantize_model_ternary(model, GROUP_SIZE, quant_method=QUANT_METHOD)
 model.eval()
 pre_ppl = compute_perplexity(model, tokenizer)
 print(f"  Pre-calibration perplexity: {pre_ppl:.2f}")
@@ -146,6 +147,7 @@ with open("/content/qat_simple_results.json", "w") as f:
     json.dump({
         "fp16_ppl": fp16_ppl, "pre_ppl": pre_ppl, "post_ppl": post_ppl,
         "trajectory": ppl_history, "n_steps": N_STEPS, "lr": LR,
+        "quant_method": QUANT_METHOD,
         "n_wrapped": n_wrapped, "n_trainable": sum(p.numel() for p in cal_params),
     }, f, indent=2, default=str)
 print("\nSaved: /content/qat_simple_results.json")
