@@ -77,13 +77,19 @@ class LinearTernary(nn.Module):
         )
 
 
-def quantize_linear_layer_ternary(linear: nn.Linear, group_size: int = 128) -> LinearTernary:
+def quantize_linear_layer_ternary(
+    linear: nn.Linear,
+    group_size: int = 128,
+    quant_method: str = "mse",
+) -> LinearTernary:
     """
     Convert a single nn.Linear layer to LinearTernary.
 
     Args:
         linear: Standard PyTorch linear layer.
         group_size: Quantization group size.
+        quant_method: "mse" for PTQ reconstruction error or "bitnet" for
+            absmean BitNet-style quantization.
 
     Returns:
         LinearTernary module.
@@ -92,7 +98,7 @@ def quantize_linear_layer_ternary(linear: nn.Linear, group_size: int = 128) -> L
     bias = linear.bias.data.to(torch.float16) if linear.bias is not None else None
     N, K = weight.shape
 
-    q, g = quantize_ternary(weight, group_size)
+    q, g = quantize_ternary(weight, group_size, method=quant_method)
     packed = pack_ternary(q)
 
     return LinearTernary(
@@ -108,6 +114,7 @@ def quantize_model_ternary(
     model: nn.Module,
     group_size: int = 128,
     skip_layers: Optional[List[str]] = None,
+    quant_method: str = "mse",
 ) -> nn.Module:
     """
     Quantize all eligible nn.Linear layers in a model to ternary precision.
@@ -120,6 +127,8 @@ def quantize_model_ternary(
         group_size: Quantization group size (default 128).
         skip_layers: Substrings; matching layer names are skipped.
                      Default skips embeddings, lm_head, and rotary.
+        quant_method: "mse" for PTQ reconstruction error or "bitnet" for
+            absmean BitNet-style quantization.
 
     Returns:
         The quantized model (modified in-place).
@@ -142,10 +151,14 @@ def quantize_model_ternary(
             parent = getattr(parent, p)
 
         old = getattr(parent, parts[-1])
-        setattr(parent, parts[-1], quantize_linear_layer_ternary(old, group_size))
+        setattr(
+            parent,
+            parts[-1],
+            quantize_linear_layer_ternary(old, group_size, quant_method),
+        )
         del old
         torch.cuda.empty_cache()
         print(f"  DONE: {name}")
 
-    print(f"Quantized {len(replacements)} layers to ternary (1.58-bit).")
+    print(f"Quantized {len(replacements)} layers to ternary (method={quant_method}).")
     return model

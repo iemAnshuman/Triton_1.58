@@ -111,10 +111,15 @@ def matmul_ternary_kernel(
         w_mask = (w_k_inds[:, None] < (K // 16)) & mask_n[None, :]
         w_packed = tl.load(w_ptrs, mask=w_mask, other=0)
 
-        # --- Load per-group scale factors (gamma) ---
-        group_idx = base_k // GROUP_SIZE
-        s_ptrs = scales_ptr + (group_idx * stride_sk + offs_n * stride_sn)
-        scale = tl.load(s_ptrs, mask=mask_n, other=1.0)
+        # --- Load per-group scale factors.
+        # BLOCK_K can span multiple quantization groups. Since GROUP_SIZE is a
+        # multiple of 16, each packed INT32 row belongs to exactly one group.
+        group_idx = (base_k + offs_k_packed * 16) // GROUP_SIZE
+        s_ptrs = scales_ptr + (
+            group_idx[:, None] * stride_sk + offs_n[None, :] * stride_sn
+        )
+        scale_mask = (group_idx[:, None] < tl.cdiv(K, GROUP_SIZE)) & mask_n[None, :]
+        scale = tl.load(s_ptrs, mask=scale_mask, other=1.0)
 
         # --- Unpack 16 ternary values per INT32, dequantize, and multiply ---
         for bit in tl.static_range(16):
@@ -129,7 +134,7 @@ def matmul_ternary_kernel(
             )
 
             # Apply per-group scale
-            w_deq = w_tern * scale[None, :]
+            w_deq = w_tern * scale
 
             # Load corresponding activation slice
             k_inds = base_k + offs_k_packed * 16 + bit
@@ -172,6 +177,7 @@ def matmul_ternary(
     assert K_packed == K // 16, (
         f"Shape mismatch: K={K} expects packed K dim {K//16}, got {K_packed}"
     )
+    assert group_size % 16 == 0, "group_size must be divisible by 16"
 
     output = torch.empty((M, N), dtype=torch.float16, device=x.device)
     grid = lambda meta: (
@@ -198,7 +204,10 @@ def test_ternary_kernel(device: str = "cuda", group_size: int = 128):
     print("Testing Triton ternary kernel...")
     for M, K, N in [(1, 2048, 2048), (1, 2048, 8192), (32, 2048, 2048), (128, 2048, 8192)]:
         W = torch.randn(N, K, dtype=torch.float16, device=device)
-        q, g = quantize_ternary(W, group_size)
+        # Force neighboring groups to have very different scales. This catches
+        # kernels that accidentally reuse one scale over a larger BLOCK_K tile.
+        W[:, group_size:group_size * 2] *= 8
+        q, g = quantize_ternary(W, group_size, method="mse")
         packed = pack_ternary(q)
         w_T = packed.T.contiguous()
         g_T = g.T.contiguous()

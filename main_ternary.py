@@ -50,6 +50,7 @@ except ImportError:
 # ── Configuration ──────────────────────────────────────────────
 DEVICE = "cuda"
 GROUP_SIZE = 128
+QUANT_METHOD = "mse"
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 TEST_PROMPTS = [
@@ -140,7 +141,7 @@ def main():
         MODEL_NAME, torch_dtype=torch.float16, device_map="cuda"
     )
     model_tern.eval()
-    model_tern = quantize_model_ternary(model_tern, GROUP_SIZE)
+    model_tern = quantize_model_ternary(model_tern, GROUP_SIZE, quant_method=QUANT_METHOD)
     model_tern.eval()
 
     tern_generations = {
@@ -203,6 +204,7 @@ def main():
         "model": MODEL_NAME,
         "gpu": gpu_name,
         "group_size": GROUP_SIZE,
+        "quant_method": QUANT_METHOD,
         "benchmarks": results,
         "sample_generations": {
             "fp16": fp16_generations,
