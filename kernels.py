@@ -102,15 +102,20 @@ def matmul_4bit_kernel(
         w_mask = (w_k_inds[:, None] < (K // 8)) & mask_n[None, :]
         w_packed = tl.load(w_ptrs, mask=w_mask, other=0)
 
-        # --- Load per-group scale factors ---
-        group_idx = base_k // GROUP_SIZE
-        s_ptrs = scales_ptr + (group_idx * stride_sk + offs_n * stride_sn)
-        scale = tl.load(s_ptrs, mask=mask_n, other=1.0)
+        # --- Load per-group scale factors.
+        # BLOCK_K can span multiple quantization groups. Since GROUP_SIZE is a
+        # multiple of 8, each packed INT32 row belongs to exactly one group.
+        group_idx = (base_k + offs_k_packed * 8) // GROUP_SIZE
+        s_ptrs = scales_ptr + (
+            group_idx[:, None] * stride_sk + offs_n[None, :] * stride_sn
+        )
+        scale_mask = (group_idx[:, None] < tl.cdiv(K, GROUP_SIZE)) & mask_n[None, :]
+        scale = tl.load(s_ptrs, mask=scale_mask, other=1.0)
 
         # --- Unpack, dequantize, and multiply (8 sub-slices per packed INT32) ---
         for bit in tl.static_range(8):
             w_slice = (w_packed >> (bit * 4)) & 0xF
-            w_deq = ((w_slice.to(tl.float32) - 8.0) / 7.5) * scale[None, :]
+            w_deq = ((w_slice.to(tl.float32) - 8.0) / 7.5) * scale
 
             k_inds = base_k + offs_k_packed * 8 + bit
             x_ptrs = x_ptr + (
@@ -146,6 +151,7 @@ def matmul_4bit(
     M, K = x.shape
     K_packed, N = w_packed.shape
     assert K_packed == K // 8, f"Shape mismatch: K={K}, packed K dim={K_packed}"
+    assert group_size % 8 == 0, "group_size must be divisible by 8"
 
     output = torch.empty((M, N), dtype=torch.float16, device=x.device)
     grid = lambda meta: (
@@ -170,21 +176,33 @@ def test_kernel(device: str = "cuda", group_size: int = 128):
     from quantize import quantize_4bit, dequantize_4bit, pack_4bit
 
     print("Testing Triton kernel...")
-    for M, K, N in [(1, 2048, 2048), (1, 2048, 8192), (32, 2048, 2048), (128, 2048, 8192)]:
-        W = torch.randn(N, K, dtype=torch.float16, device=device)
-        q, s = quantize_4bit(W, group_size)
-        packed = pack_4bit(q)
-        w_T = packed.T.contiguous()
-        s_T = s.T.contiguous()
-        X = torch.randn(M, K, dtype=torch.float16, device=device)
+    # Every autotune config uses BLOCK_K=128, so a group size below that puts two
+    # quantization groups inside a single weight tile. A kernel that loads one
+    # scale per tile passes at 128 and fails at 64.
+    for gs in sorted({group_size, 64}):
+        print(f"  -- group_size={gs} --")
+        for M, K, N in [(1, 2048, 2048), (1, 2048, 8192), (32, 2048, 2048), (128, 2048, 8192)]:
+            W = torch.randn(N, K, dtype=torch.float16, device=device)
+            # Force neighboring groups to have very different scales, so a reused
+            # scale shows up as a large error rather than rounding noise.
+            W[:, gs:gs * 2] *= 8
+            q, s = quantize_4bit(W, gs)
+            packed = pack_4bit(q)
+            w_T = packed.T.contiguous()
+            s_T = s.T.contiguous()
+            X = torch.randn(M, K, dtype=torch.float16, device=device)
 
-        ref = X @ dequantize_4bit(q, s, group_size).T
-        out = matmul_4bit(X, w_T, s_T, group_size)
-        diff = (ref.float() - out.float()).abs().max().item()
-        status = "OK" if diff < 1.0 else "FAIL"
-        print(f"  [{status}] M={M:>4} K={K:>5} N={N:>5} | max_diff={diff:.4f}")
+            ref = X @ dequantize_4bit(q, s, gs).T
+            out = matmul_4bit(X, w_T, s_T, gs)
+            diff = (ref.float() - out.float()).abs().max().item()
+            rel = diff / max(ref.float().abs().max().item(), 1e-6)
+            status = "OK" if rel < 0.01 else "FAIL"
+            print(
+                f"  [{status}] M={M:>4} K={K:>5} N={N:>5} | "
+                f"max_diff={diff:.4f} rel={rel:.2e}"
+            )
 
-        del W, q, s, packed, w_T, s_T, X, ref, out
+            del W, q, s, packed, w_T, s_T, X, ref, out
 
     torch.cuda.empty_cache()
     print("Kernel tests done!\n")
