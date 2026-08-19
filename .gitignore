@@ -1,2 +1,20 @@
+# Byte-compiled / cache
 __pycache__/
 *.py[cod]
+
+# Editor and tooling artifacts
+.cph/
+.vscode/
+.idea/
+
+# Virtual environments
+.venv/
+venv/
+
+# Generated benchmark output
+*.png
+report_data.json
+ternary_report.json
+ternary_quality_search.json
+qat_results.json
+qat_simple_results.json
