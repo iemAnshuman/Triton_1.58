@@ -25,9 +25,7 @@ Runs:
 """
 
 import json
-import time
 import torch
-import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Ternary (this phase)
