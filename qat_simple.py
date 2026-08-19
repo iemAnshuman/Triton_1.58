@@ -1,4 +1,4 @@
-# Copyright 2026 Anshuman Agrawal
+# Copyright 2026 The Triton 1.58 Authors
 # Licensed under the Apache License, Version 2.0
 
 """
