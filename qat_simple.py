@@ -6,8 +6,16 @@ qat_simple.py — Simple calibration attempt for ternary model.
 Uses FP32 parameters, CE loss only (no KD), much lower learning rate.
 """
 
-import sys, json, time, torch, numpy as np
-sys.path.insert(0, '/content/Triton_1.58')
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+
+# Make the sibling modules importable regardless of the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
@@ -18,6 +26,7 @@ from generate import generate_text
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 GROUP_SIZE = 128
 QUANT_METHOD = "mse"
+OUTPUT_PATH = Path(__file__).resolve().parent / "qat_simple_results.json"
 DEVICE = "cuda"
 N_STEPS = 500
 LR = 1e-5  # 20x lower than before
@@ -143,11 +152,11 @@ print(f"\n  Trajectory:")
 for label, p in ppl_history:
     print(f"    {label}: {p:.2f}")
 
-with open("/content/qat_simple_results.json", "w") as f:
+with open(OUTPUT_PATH, "w") as f:
     json.dump({
         "fp16_ppl": fp16_ppl, "pre_ppl": pre_ppl, "post_ppl": post_ppl,
         "trajectory": ppl_history, "n_steps": N_STEPS, "lr": LR,
         "quant_method": QUANT_METHOD,
         "n_wrapped": n_wrapped, "n_trainable": sum(p.numel() for p in cal_params),
     }, f, indent=2, default=str)
-print("\nSaved: /content/qat_simple_results.json")
+print(f"\nSaved: {OUTPUT_PATH}")

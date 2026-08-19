@@ -13,12 +13,19 @@ It is a post-quantization calibration step that adapts the model's residual laye
 to compensate for the quality loss introduced by ternary weight quantization.
 """
 
-import sys, json, time, torch, numpy as np
-sys.path.insert(0, '/content/Triton_1.58')
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+
+# Make the sibling modules importable regardless of the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
-from torch.utils.data import DataLoader
 from model_ternary import quantize_model_ternary
 from benchmark import compute_perplexity
 
@@ -26,6 +33,7 @@ from benchmark import compute_perplexity
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 GROUP_SIZE = 128
 QUANT_METHOD = "mse"
+OUTPUT_PATH = Path(__file__).resolve().parent / "qat_results.json"
 DEVICE = "cuda"
 
 # Calibration hyperparameters
@@ -241,9 +249,9 @@ results = {
     "loss_curve": losses,
 }
 
-with open("/content/qat_results.json", "w") as f:
+with open(OUTPUT_PATH, "w") as f:
     json.dump(results, f, indent=2, default=str)
-print("\nSaved: /content/qat_results.json")
+print(f"\nSaved: {OUTPUT_PATH}")
 
 del model_fp16
 torch.cuda.empty_cache()
