@@ -1,7 +1,9 @@
-Efficient LLM Inference Using Custom Triton Kernels for 4-Bit Quantization
-Copyright 2026 Anshuman Agrawal
+Efficient LLM Inference Using Custom Triton Kernels for Quantized Models
 
-This product includes software developed by Anshuman Agrawal.
+Copyright 2026 The Triton 1.58 Authors
+
+This product was jointly developed by Anshuman Agrawal and Ibteshamul Haque,
+who hold equal rights in the work. See the AUTHORS file.
 
 Licensed under the Apache License, Version 2.0 (the "License").
 See the LICENSE file for the full text of the License.
