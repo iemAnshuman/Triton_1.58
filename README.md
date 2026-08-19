@@ -1,66 +1,138 @@
-# Ternary (1.58-bit) Phase
+# Triton 1.58
 
-Extends the 4-bit pipeline from the previous commit to ternary weight
-quantization, following the BitNet b1.58 paradigm (Ma et al., 2024) applied
-as a post-training transform.
+Post-training quantization of transformer weights down to ternary
+`{-1, 0, +1}`, with custom Triton GPU kernels for the quantized matmul.
+Follows the BitNet b1.58 formulation (Ma et al., 2024), applied as a
+post-training transform on an existing FP16 checkpoint rather than as a
+training-time constraint.
 
-## What's new
+The repository holds two phases that share one benchmark harness: a 4-bit
+pipeline, and the ternary pipeline built on top of it.
 
+## Status
+
+Research code. Post-training ternary quantization is substantially harder
+than 4-bit, and this implementation shows a real perplexity gap against
+FP16. Read [Quality caveat](#quality-caveat) before relying on it.
+
+## Requirements
+
+A CUDA GPU is required. The Triton kernels have no CPU fallback.
+
+```bash
+pip install -r requirements.txt
 ```
-quantize_ternary.py  — absmean ternary quantization + 16-per-INT32 packing
-kernels_ternary.py   — Triton ternary matmul kernel with 2-bit unpacking
-model_ternary.py     — LinearTernary nn.Module + model traversal
-main_ternary.py      — 4-way benchmark pipeline (FP16 / 4-bit / ternary / NF4)
-```
 
-The existing `benchmark.py`, `generate.py`, and `visualize.py` modules from
-the 4-bit phase are reused unchanged.
+The default model, `TinyLlama/TinyLlama-1.1B-Chat-v1.0`, downloads on
+first run.
 
-## Key design decisions
+## Quickstart
 
-- **Quantization scheme**: absmean per-group (128), following BitNet's
-  quantization function but applied post-training rather than during training.
-- **Packing**: 16 ternary values per INT32. Encoding `0 -> 00`, `+1 -> 01`,
-  `-1 -> 10` (code `11` unused).
-- **Kernel**: unpacks to FP16 `{-1.0, 0.0, +1.0}`, applies per-group scale,
-  dispatches to Tensor Cores via `tl.dot()`. True multiplication-free
-  execution requires hardware with native ternary matmul (not available on
-  current NVIDIA consumer GPUs).
-- **Skipped layers**: embeddings, LM head, and rotary — kept in FP16.
-
-## Compression math
-
-| Storage                          | Bits/weight |
-|----------------------------------|-------------|
-| FP16                             | 16.00       |
-| 4-bit (previous phase)           | 4.00 + scales ~= 4.12 |
-| Ternary (this phase)             | 2.00 + scales ~= 2.12 |
-| Information-theoretic minimum    | 1.58        |
-
-Practical VRAM reduction vs FP16: roughly 8x on quantized layers.
-
-## Running
+Four-way benchmark across FP16, 4-bit, ternary, and bitsandbytes NF4:
 
 ```bash
 python main_ternary.py
 ```
 
-Outputs `ternary_benchmarks.png` and `ternary_report.json`.
+Writes `ternary_benchmarks.png` and `ternary_report.json`.
 
-For quality-oriented PTQ experiments, run the CUDA search script:
+The 4-bit phase on its own:
+
+```bash
+python main.py
+```
+
+Writes `benchmark_charts.png`, `kernel_charts.png`, and `report_data.json`.
+
+### Correctness self-tests
+
+Each quantizer and kernel module checks itself against a PyTorch reference
+when run directly:
+
+```bash
+python quantize_ternary.py    # pack/unpack round trip, sparsity, effective bits
+python kernels_ternary.py     # kernel output vs dequantized reference matmul
+python quantize.py            # 4-bit equivalents
+python kernels.py
+```
+
+### Quality search
+
+Pure ternary PTQ can be too destructive at this model size, so this sweeps
+hybrid configurations that hold selected projections or edge blocks in FP16:
 
 ```bash
 python ternary_quality_search.py --target-ppl 100 --max-samples 100
 ```
 
-It evaluates pure ternary first, then hybrid variants that keep selected
-sensitive projections or edge transformer blocks in FP16 while the remaining
-linear layers use the Triton ternary kernel.
+Writes `ternary_quality_search.json` and stops early once the target
+perplexity is reached.
 
-## Expected quality caveat
+### Calibration experiments
 
-Post-training ternary quantization is fundamentally harder than 4-bit — the
-information-theoretic capacity is 4x lower. Unlike natively trained BitNet
-models (which match FP16), PTQ ternary typically shows a noticeable
-perplexity gap. This implementation is a foundation for future
-quantization-aware fine-tuning work that can close the gap.
+```bash
+python qat_calibration.py     # knowledge distillation from the FP16 teacher
+python qat_simple.py          # cross-entropy only, lower learning rate
+```
+
+## Layout
+
+| File | Role |
+|---|---|
+| `quantize.py`, `quantize_ternary.py` | Weight quantization and bit packing |
+| `kernels.py`, `kernels_ternary.py` | Triton matmul kernels with fused dequantization |
+| `model.py`, `model_ternary.py` | Quantized `nn.Module` replacements and model traversal |
+| `main.py`, `main_ternary.py` | Benchmark pipelines |
+| `benchmark.py` | Perplexity, latency, and VRAM measurement |
+| `generate.py` | Text generation helper |
+| `visualize.py` | Chart rendering |
+| `ternary_quality_search.py` | Hybrid FP16 and ternary configuration sweep |
+| `qat_calibration.py`, `qat_simple.py` | Post-quantization calibration experiments |
+
+## How the ternary path works
+
+**Quantization.** Absmean over groups of 128, following BitNet, plus an
+optional Lloyd-style variant that iteratively updates the scale and the
+zeroing threshold. The Lloyd variant is the default, because it
+reconstructs a checkpoint that never saw ternary weights better than raw
+absmean rounding does.
+
+**Packing.** 16 ternary values per INT32 at 2 bits each. The encoding is
+`0 -> 00`, `+1 -> 01`, `-1 -> 10`, leaving `11` unused.
+
+**Kernel.** Loads packed INT32 weights, unpacks them in SRAM with bitwise
+ops, applies the per-group scale, then dispatches to Tensor Cores through
+`tl.dot()`. Current NVIDIA consumer hardware has no native ternary matmul,
+so the practical win is memory bandwidth rather than multiplication-free
+execution.
+
+**Held in FP16.** Embeddings, LM head, and rotary layers.
+
+## Compression math
+
+Scales are FP16, one per group of 128 weights, so they add
+`16 / 128 = 0.125` bits to every weight. The table counts that overhead.
+
+| Storage | Bits/weight | vs FP16 |
+|---|---|---|
+| FP16 | 16.000 | 1.00x |
+| 4-bit plus scales | 4.125 | 3.88x |
+| Ternary plus scales | 2.125 | **7.53x** |
+| Ternary information-theoretic floor | 1.585 | 10.09x |
+
+The floor is `log2(3)` and is unreachable with a fixed 2-bit-per-weight
+layout, which is what the packing format uses.
+
+## Quality caveat
+
+Post-training ternary quantization is fundamentally harder than 4-bit,
+because the representable capacity is 4x lower. Natively trained BitNet
+models match FP16, but ternary PTQ applied to a checkpoint that never saw
+ternary weights typically shows a noticeable perplexity gap. The
+calibration scripts are a first attempt at closing it, and the quality
+search exists because the pure ternary configuration alone was not good
+enough.
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
